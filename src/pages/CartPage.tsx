@@ -44,7 +44,12 @@ export default function CartPage() {
       
       // 2. VakifBank odeme oturumu olustur
       const returnUrl = `${window.location.origin}/payment-callback`;
-      const paymentSession = await createPaymentSession(order.id, returnUrl, authState.token || undefined);
+      
+      if (!authState.token) {
+        throw new Error('Oturum suresi dolmus. Lutfen tekrar giris yapin.');
+      }
+      
+      const paymentSession = await createPaymentSession(order.id, returnUrl, authState.token);
       
       // 3. Odeme sayfasina yonlendir
       if (paymentSession.payment_url) {
@@ -120,9 +125,21 @@ export default function CartPage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-300 text-sm">
-          {error}
-        </div>
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5 text-red-300"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0">
+              <Shield className="w-5 h-5 text-red-400" />
+            </div>
+            <div>
+              <p className="font-semibold text-red-300 mb-1">Odeme Hatasi</p>
+              <p className="text-sm text-red-400/80">{error}</p>
+            </div>
+          </div>
+        </motion.div>
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
