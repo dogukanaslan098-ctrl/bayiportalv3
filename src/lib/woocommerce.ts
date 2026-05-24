@@ -160,22 +160,15 @@ export async function fetchCustomer(customerId: number): Promise<WCCustomer> {
 }
 
 // Odeme URL olustur (VakifBank sanal POS icin)
-export async function createPaymentSession(orderId: number, returnUrl: string, token?: string): Promise<{
+export async function createPaymentSession(orderId: number, returnUrl: string): Promise<{
   payment_url: string;
   session_id: string;
 }> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  
-  // Bayi token'i varsa ekle (BayiPortal authentication)
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  
   const response = await fetch(`${API_BASE}/payment/create-session`, {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ order_id: orderId, return_url: returnUrl }),
   });
   

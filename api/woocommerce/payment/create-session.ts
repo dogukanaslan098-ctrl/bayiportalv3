@@ -47,15 +47,25 @@ export default async function handler(request: Request) {
     });
   }
 
-  // Bayi token'i al (client'tan gelen Bearer token)
-  const authHeader = request.headers.get('Authorization');
-  const bayiToken = authHeader?.replace('Bearer ', '');
-  
-  debugLog('Auth header present:', !!authHeader);
-  debugLog('Bayi token present:', !!bayiToken);
+  // WooCommerce API credentials kontrolu (her zaman gerekli)
   debugLog('WC_KEY present:', !!WC_KEY);
   debugLog('WC_SECRET present:', !!WC_SECRET);
   debugLog('WC_URL:', WC_URL);
+  
+  // WC credentials yoksa hemen hata don
+  if (!WC_KEY || !WC_SECRET) {
+    debugError('WooCommerce API credentials not configured');
+    return new Response(JSON.stringify({ 
+      error: 'Odeme sistemi yapilandirmasi eksik. Lutfen yonetici ile iletisime gecin.',
+      debug: DEBUG_MODE ? {
+        wc_key_set: !!WC_KEY,
+        wc_secret_set: !!WC_SECRET
+      } : undefined
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    });
+  }
 
   try {
     const body = await request.json();
@@ -74,36 +84,13 @@ export default async function handler(request: Request) {
       });
     }
 
-    // Authentication headers
+    // Authentication headers - her zaman WC Basic Auth kullan
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'Authorization': 'Basic ' + btoa(`${WC_KEY}:${WC_SECRET}`),
     };
 
-    let authMethod = 'none';
-    
-    // Bayi token varsa onu kullan, yoksa WC key/secret kullan
-    if (bayiToken) {
-      headers['Authorization'] = `Bearer ${bayiToken}`;
-      authMethod = 'bayi_token';
-      debugLog('Using bayi token for authentication');
-    } else if (WC_KEY && WC_SECRET) {
-      headers['Authorization'] = 'Basic ' + btoa(`${WC_KEY}:${WC_SECRET}`);
-      authMethod = 'wc_basic';
-      debugLog('Using WC credentials for authentication');
-    } else {
-      debugError('No authentication credentials available');
-      return new Response(JSON.stringify({ 
-        error: 'Authentication credentials missing',
-        debug: DEBUG_MODE ? {
-          wc_key_set: !!WC_KEY,
-          wc_secret_set: !!WC_SECRET,
-          bayi_token_set: !!bayiToken
-        } : undefined
-      }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
-    }
+    debugLog('Using WC Basic Auth for payment API');
 
     const paymentEndpoint = `${WC_URL}/wp-json/bayiportal/v1/payment/create`;
     const paymentBody = {
@@ -113,7 +100,6 @@ export default async function handler(request: Request) {
     
     debugLog('Payment endpoint:', paymentEndpoint);
     debugLog('Payment body:', paymentBody);
-    debugLog('Auth method:', authMethod);
 
     const paymentResponse = await fetch(paymentEndpoint, {
       method: 'POST',
@@ -146,7 +132,6 @@ export default async function handler(request: Request) {
         status: paymentResponse.status,
         debug: DEBUG_MODE ? {
           endpoint: paymentEndpoint,
-          auth_method: authMethod,
           response_status: paymentResponse.status,
           error_details: errorDetails
         } : undefined
@@ -180,7 +165,6 @@ export default async function handler(request: Request) {
       session_id: paymentData.session_id,
       debug: DEBUG_MODE ? {
         endpoint: paymentEndpoint,
-        auth_method: authMethod,
         response_keys: Object.keys(paymentData)
       } : undefined
     }), {
