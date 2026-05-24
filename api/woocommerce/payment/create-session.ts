@@ -1,22 +1,14 @@
 // VakifBank Sanal POS - Odeme Oturumu Olustur
 // Vercel Serverless Function
-// Debug modu: PAYMENT_DEBUG=true ortam degiskeni ile aktif edilir
 
 const WC_URL = process.env.WOOCOMMERCE_URL || 'https://provanya.com';
 const WC_KEY = process.env.WOOCOMMERCE_KEY || '';
 const WC_SECRET = process.env.WOOCOMMERCE_SECRET || '';
 const DEBUG_MODE = process.env.PAYMENT_DEBUG === 'true';
 
-// Debug logger - sadece debug modu aktifse loglar
 function debugLog(...args: unknown[]) {
   if (DEBUG_MODE) {
-    console.log('[Payment Debug]', new Date().toISOString(), ...args);
-  }
-}
-
-function debugError(...args: unknown[]) {
-  if (DEBUG_MODE) {
-    console.error('[Payment Debug Error]', new Date().toISOString(), ...args);
+    console.log('[Payment]', ...args);
   }
 }
 
@@ -25,165 +17,130 @@ export const config = {
 };
 
 export default async function handler(request: Request) {
-  debugLog('Request received:', request.method, request.url);
-  
-  // CORS preflight
+  // CORS
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      },
-    });
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   if (request.method !== 'POST') {
-    debugLog('Method not allowed:', request.method);
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 
-  // WooCommerce API credentials kontrolu (her zaman gerekli)
-  debugLog('WC_KEY present:', !!WC_KEY);
-  debugLog('WC_SECRET present:', !!WC_SECRET);
-  debugLog('WC_URL:', WC_URL);
-  
-  // WC credentials yoksa hemen hata don
+  // Ortam degiskenleri kontrolu
   if (!WC_KEY || !WC_SECRET) {
-    debugError('WooCommerce API credentials not configured');
+    console.error('[Payment] WooCommerce credentials eksik');
     return new Response(JSON.stringify({ 
-      error: 'Odeme sistemi yapilandirmasi eksik. Lutfen yonetici ile iletisime gecin.',
-      debug: DEBUG_MODE ? {
-        wc_key_set: !!WC_KEY,
-        wc_secret_set: !!WC_SECRET
-      } : undefined
+      error: 'Odeme sistemi yapilandirmasi eksik. Lutfen Vercel ortam degiskenlerini kontrol edin (WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET).'
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 
   try {
     const body = await request.json();
     const { order_id, return_url } = body;
-    
-    debugLog('Request body:', { order_id, return_url });
 
     if (!order_id) {
-      debugLog('Order ID missing');
-      return new Response(JSON.stringify({ 
-        error: 'Order ID gerekli',
-        debug: DEBUG_MODE ? { received_body: body } : undefined
-      }), {
+      return new Response(JSON.stringify({ error: 'Siparis ID gerekli' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    // Authentication headers - her zaman WC Basic Auth kullan
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Basic ' + btoa(`${WC_KEY}:${WC_SECRET}`),
-    };
+    debugLog('Odeme oturumu olusturuluyor, siparis:', order_id);
 
-    debugLog('Using WC Basic Auth for payment API');
-
-    const paymentEndpoint = `${WC_URL}/wp-json/bayiportal/v1/payment/create`;
-    const paymentBody = {
-      order_id,
-      return_url: return_url || `${WC_URL}/payment-callback`,
-    };
+    // WooCommerce REST API - Basic Auth
+    const authString = btoa(`${WC_KEY}:${WC_SECRET}`);
     
-    debugLog('Payment endpoint:', paymentEndpoint);
-    debugLog('Payment body:', paymentBody);
-
-    const paymentResponse = await fetch(paymentEndpoint, {
+    const paymentEndpoint = `${WC_URL}/wp-json/bayiportal/v1/payment/create`;
+    
+    const response = await fetch(paymentEndpoint, {
       method: 'POST',
-      headers,
-      body: JSON.stringify(paymentBody),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${authString}`,
+      },
+      body: JSON.stringify({
+        order_id,
+        return_url: return_url || `${WC_URL}/payment-callback`,
+      }),
     });
 
-    debugLog('Response status:', paymentResponse.status);
-    debugLog('Response headers:', Object.fromEntries(paymentResponse.headers.entries()));
+    const responseText = await response.text();
+    debugLog('API yaniti:', response.status, responseText.substring(0, 300));
 
-    const responseText = await paymentResponse.text();
-    debugLog('Response body (raw):', responseText.substring(0, 500));
-
-    if (!paymentResponse.ok) {
-      debugError('API Error:', paymentResponse.status, responseText);
-      
+    // Hata kontrolu
+    if (!response.ok) {
       let errorMessage = 'Odeme oturumu olusturulamadi';
-      let errorDetails = null;
       
       try {
-        const errorJson = JSON.parse(responseText);
-        errorMessage = errorJson.message || errorJson.error || errorMessage;
-        errorDetails = errorJson;
+        const errorData = JSON.parse(responseText);
+        
+        // WooCommerce hata mesajlarini duzelt
+        if (errorData.message) {
+          if (errorData.message.includes('Kullanıcı adı bilinmiyor') || 
+              errorData.message.includes('Unknown username') ||
+              errorData.code === 'invalid_username') {
+            errorMessage = 'WooCommerce API anahtari gecersiz. Lutfen Vercel ortam degiskenlerini kontrol edin.';
+          } else if (errorData.code === 'rest_forbidden' || response.status === 403) {
+            errorMessage = 'API erisim yetkisi yok. WooCommerce API anahtari izinlerini kontrol edin.';
+          } else {
+            errorMessage = errorData.message;
+          }
+        }
       } catch {
-        errorDetails = { raw: responseText.substring(0, 200) };
+        // JSON parse hatasini yoksay
       }
-      
+
       return new Response(JSON.stringify({ 
         error: errorMessage,
-        status: paymentResponse.status,
-        debug: DEBUG_MODE ? {
-          endpoint: paymentEndpoint,
-          response_status: paymentResponse.status,
-          error_details: errorDetails
-        } : undefined
+        debug: DEBUG_MODE ? { status: response.status, response: responseText.substring(0, 200) } : undefined
       }), {
-        status: paymentResponse.status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        status: response.status === 401 ? 500 : response.status, // 401'i 500 olarak dondur (config hatasi)
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    let paymentData;
-    try {
-      paymentData = JSON.parse(responseText);
-    } catch {
-      debugError('Failed to parse response JSON:', responseText);
+    // Basarili yanit
+    const paymentData = JSON.parse(responseText);
+    
+    if (!paymentData.payment_url) {
       return new Response(JSON.stringify({ 
-        error: 'Invalid response from payment API',
-        debug: DEBUG_MODE ? { raw_response: responseText.substring(0, 200) } : undefined
+        error: 'Odeme URL\'si alinamadi. Lutfen tekrar deneyin.'
       }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
-    
-    debugLog('Payment session created successfully:', {
-      has_payment_url: !!paymentData.payment_url,
-      has_session_id: !!paymentData.session_id
-    });
+
+    debugLog('Odeme oturumu olusturuldu');
 
     return new Response(JSON.stringify({
       payment_url: paymentData.payment_url,
       session_id: paymentData.session_id,
-      debug: DEBUG_MODE ? {
-        endpoint: paymentEndpoint,
-        response_keys: Object.keys(paymentData)
-      } : undefined
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
 
   } catch (error) {
-    debugError('Session error:', error);
+    console.error('[Payment] Hata:', error);
     return new Response(JSON.stringify({ 
-      error: 'Odeme oturumu olusturulurken hata olustu',
-      details: error instanceof Error ? error.message : 'Unknown error',
-      debug: DEBUG_MODE ? {
-        error_name: error instanceof Error ? error.name : 'Unknown',
-        error_stack: error instanceof Error ? error.stack?.substring(0, 300) : undefined
-      } : undefined
+      error: 'Odeme islemi sirasinda bir hata olustu. Lutfen tekrar deneyin.',
+      debug: DEBUG_MODE ? { message: error instanceof Error ? error.message : 'Unknown' } : undefined
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 }
