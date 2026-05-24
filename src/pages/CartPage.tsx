@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 export default function CartPage() {
   const { cart, total, removeFromCart, updateQuantity, clearCart } = useCart();
-  const { user } = useAuth();
+  const { user, authState } = useAuth();
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [orderNumber, setOrderNumber] = useState('');
   const [note, setNote] = useState('');
@@ -44,7 +44,12 @@ export default function CartPage() {
       
       // 2. VakifBank odeme oturumu olustur
       const returnUrl = `${window.location.origin}/payment-callback`;
-      const paymentSession = await createPaymentSession(order.id, returnUrl);
+      
+      if (!authState.token) {
+        throw new Error('Oturum suresi dolmus. Lutfen tekrar giris yapin.');
+      }
+      
+      const paymentSession = await createPaymentSession(order.id, returnUrl, authState.token);
       
       // 3. Odeme sayfasina yonlendir
       if (paymentSession.payment_url) {

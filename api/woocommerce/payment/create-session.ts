@@ -1,23 +1,14 @@
 // VakifBank Sanal POS - Odeme Oturumu Olustur
-// Vercel Serverless Function
+// BayiPortal Plugin API kullanir
 
 const WC_URL = process.env.WOOCOMMERCE_URL || 'https://provanya.com';
-const WC_KEY = process.env.WOOCOMMERCE_KEY || '';
-const WC_SECRET = process.env.WOOCOMMERCE_SECRET || '';
 const DEBUG_MODE = process.env.PAYMENT_DEBUG === 'true';
-
-function debugLog(...args: unknown[]) {
-  if (DEBUG_MODE) {
-    console.log('[Payment]', ...args);
-  }
-}
 
 export const config = {
   runtime: 'edge',
 };
 
 export default async function handler(request: Request) {
-  // CORS
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -35,18 +26,20 @@ export default async function handler(request: Request) {
     });
   }
 
-  // Ortam degiskenleri kontrolu
-  if (!WC_KEY || !WC_SECRET) {
-    console.error('[Payment] WooCommerce credentials eksik');
-    return new Response(JSON.stringify({ 
-      error: 'Odeme sistemi yapilandirmasi eksik. Lutfen Vercel ortam degiskenlerini kontrol edin (WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET).'
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    });
-  }
-
   try {
+    // Bayi token'ini al (client'tan gelen)
+    const authHeader = request.headers.get('Authorization');
+    const bayiToken = authHeader?.replace('Bearer ', '');
+
+    if (!bayiToken) {
+      return new Response(JSON.stringify({ 
+        error: 'Oturum suresi dolmus. Lutfen tekrar giris yapin.'
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+
     const body = await request.json();
     const { order_id, return_url } = body;
 
@@ -57,18 +50,18 @@ export default async function handler(request: Request) {
       });
     }
 
-    debugLog('Odeme oturumu olusturuluyor, siparis:', order_id);
+    if (DEBUG_MODE) {
+      console.log('[Payment] Odeme oturumu olusturuluyor, siparis:', order_id);
+    }
 
-    // WooCommerce REST API - Basic Auth
-    const authString = btoa(`${WC_KEY}:${WC_SECRET}`);
-    
+    // BayiPortal Plugin API'sine istek at (Bearer token ile)
     const paymentEndpoint = `${WC_URL}/wp-json/bayiportal/v1/payment/create`;
     
     const response = await fetch(paymentEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Basic ${authString}`,
+        'Authorization': `Bearer ${bayiToken}`,
       },
       body: JSON.stringify({
         order_id,
@@ -77,41 +70,35 @@ export default async function handler(request: Request) {
     });
 
     const responseText = await response.text();
-    debugLog('API yaniti:', response.status, responseText.substring(0, 300));
+    
+    if (DEBUG_MODE) {
+      console.log('[Payment] API yaniti:', response.status, responseText.substring(0, 500));
+    }
 
-    // Hata kontrolu
     if (!response.ok) {
       let errorMessage = 'Odeme oturumu olusturulamadi';
       
       try {
         const errorData = JSON.parse(responseText);
-        
-        // WooCommerce hata mesajlarini duzelt
         if (errorData.message) {
-          if (errorData.message.includes('Kullanıcı adı bilinmiyor') || 
-              errorData.message.includes('Unknown username') ||
-              errorData.code === 'invalid_username') {
-            errorMessage = 'WooCommerce API anahtari gecersiz. Lutfen Vercel ortam degiskenlerini kontrol edin.';
-          } else if (errorData.code === 'rest_forbidden' || response.status === 403) {
-            errorMessage = 'API erisim yetkisi yok. WooCommerce API anahtari izinlerini kontrol edin.';
-          } else {
-            errorMessage = errorData.message;
-          }
+          errorMessage = errorData.message;
+        }
+        if (errorData.code === 'unauthorized' || response.status === 401) {
+          errorMessage = 'Oturum suresi dolmus. Lutfen tekrar giris yapin.';
         }
       } catch {
-        // JSON parse hatasini yoksay
+        // JSON parse hatasi
       }
 
       return new Response(JSON.stringify({ 
         error: errorMessage,
         debug: DEBUG_MODE ? { status: response.status, response: responseText.substring(0, 200) } : undefined
       }), {
-        status: response.status === 401 ? 500 : response.status, // 401'i 500 olarak dondur (config hatasi)
+        status: response.status,
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    // Basarili yanit
     const paymentData = JSON.parse(responseText);
     
     if (!paymentData.payment_url) {
@@ -122,8 +109,6 @@ export default async function handler(request: Request) {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
-
-    debugLog('Odeme oturumu olusturuldu');
 
     return new Response(JSON.stringify({
       payment_url: paymentData.payment_url,
@@ -136,7 +121,7 @@ export default async function handler(request: Request) {
   } catch (error) {
     console.error('[Payment] Hata:', error);
     return new Response(JSON.stringify({ 
-      error: 'Odeme islemi sirasinda bir hata olustu. Lutfen tekrar deneyin.',
+      error: 'Odeme islemi sirasinda bir hata olustu.',
       debug: DEBUG_MODE ? { message: error instanceof Error ? error.message : 'Unknown' } : undefined
     }), {
       status: 500,

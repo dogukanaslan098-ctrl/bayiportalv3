@@ -160,7 +160,7 @@ export async function fetchCustomer(customerId: number): Promise<WCCustomer> {
 }
 
 // Odeme URL olustur (VakifBank sanal POS icin)
-export async function createPaymentSession(orderId: number, returnUrl: string): Promise<{
+export async function createPaymentSession(orderId: number, returnUrl: string, token: string): Promise<{
   payment_url: string;
   session_id: string;
 }> {
@@ -168,6 +168,7 @@ export async function createPaymentSession(orderId: number, returnUrl: string): 
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({ order_id: orderId, return_url: returnUrl }),
   });
