@@ -1,33 +1,24 @@
 // VakifBank Sanal POS - Odeme Oturumu Olustur
-// Vercel Serverless Function
-// Debug modu: PAYMENT_DEBUG=true ortam degiskeni ile aktif edilir
+// CLEAN VERSION (JWT ONLY - NO BASIC AUTH MIX)
 
 const WC_URL = process.env.WOOCOMMERCE_URL || 'https://provanya.com';
-const WC_KEY = process.env.WOOCOMMERCE_KEY || '';
-const WC_SECRET = process.env.WOOCOMMERCE_SECRET || '';
 const DEBUG_MODE = process.env.PAYMENT_DEBUG === 'true';
-
-// Debug logger - sadece debug modu aktifse loglar
-function debugLog(...args: unknown[]) {
-  if (DEBUG_MODE) {
-    console.log('[Payment Debug]', new Date().toISOString(), ...args);
-  }
-}
-
-function debugError(...args: unknown[]) {
-  if (DEBUG_MODE) {
-    console.error('[Payment Debug Error]', new Date().toISOString(), ...args);
-  }
-}
 
 export const config = {
   runtime: 'edge',
 };
 
+// debug helper
+function debugLog(...args: any[]) {
+  if (DEBUG_MODE) {
+    console.log('[Payment Debug]', new Date().toISOString(), ...args);
+  }
+}
+
 export default async function handler(request: Request) {
-  debugLog('Request received:', request.method, request.url);
-  
-  // CORS preflight
+  debugLog('Request:', request.method);
+
+  // CORS
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 200,
@@ -40,166 +31,90 @@ export default async function handler(request: Request) {
   }
 
   if (request.method !== 'POST') {
-    debugLog('Method not allowed:', request.method);
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  // Bayi token'i al (client'tan gelen Bearer token)
-  const authHeader = request.headers.get('Authorization');
-  const bayiToken = authHeader?.replace('Bearer ', '');
-  
-  debugLog('Auth header present:', !!authHeader);
-  debugLog('Bayi token present:', !!bayiToken);
-  debugLog('WC_KEY present:', !!WC_KEY);
-  debugLog('WC_SECRET present:', !!WC_SECRET);
-  debugLog('WC_URL:', WC_URL);
-
   try {
-    const body = await request.json();
-    const { order_id, return_url } = body;
-    
-    debugLog('Request body:', { order_id, return_url });
+    // JWT token (ONLY SOURCE OF AUTH)
+    const authHeader = request.headers.get('Authorization');
+    const token = authHeader?.replace('Bearer ', '');
 
-    if (!order_id) {
-      debugLog('Order ID missing');
-      return new Response(JSON.stringify({ 
-        error: 'Order ID gerekli',
-        debug: DEBUG_MODE ? { received_body: body } : undefined
-      }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
-    }
+    debugLog('Token exists:', !!token);
 
-    // Authentication headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    let authMethod = 'none';
-    
-    // Bayi token varsa onu kullan, yoksa WC key/secret kullan
-    if (bayiToken) {
-      headers['Authorization'] = `Bearer ${bayiToken}`;
-      authMethod = 'bayi_token';
-      debugLog('Using bayi token for authentication');
-    } else if (WC_KEY && WC_SECRET) {
-      headers['Authorization'] = 'Basic ' + btoa(`${WC_KEY}:${WC_SECRET}`);
-      authMethod = 'wc_basic';
-      debugLog('Using WC credentials for authentication');
-    } else {
-      debugError('No authentication credentials available');
-      return new Response(JSON.stringify({ 
-        error: 'Authentication credentials missing',
-        debug: DEBUG_MODE ? {
-          wc_key_set: !!WC_KEY,
-          wc_secret_set: !!WC_SECRET,
-          bayi_token_set: !!bayiToken
-        } : undefined
+    if (!token) {
+      return new Response(JSON.stringify({
+        error: 'Unauthorized - missing token'
       }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const paymentEndpoint = `${WC_URL}/wp-json/bayiportal/v1/payment/create`;
-    const paymentBody = {
-      order_id,
-      return_url: return_url || `${WC_URL}/payment-callback`,
-    };
-    
-    debugLog('Payment endpoint:', paymentEndpoint);
-    debugLog('Payment body:', paymentBody);
-    debugLog('Auth method:', authMethod);
+    const { order_id, return_url } = await request.json();
 
-    const paymentResponse = await fetch(paymentEndpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(paymentBody),
-    });
+    if (!order_id) {
+      return new Response(JSON.stringify({
+        error: 'order_id required'
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    debugLog('Response status:', paymentResponse.status);
-    debugLog('Response headers:', Object.fromEntries(paymentResponse.headers.entries()));
-
-    const responseText = await paymentResponse.text();
-    debugLog('Response body (raw):', responseText.substring(0, 500));
-
-    if (!paymentResponse.ok) {
-      debugError('API Error:', paymentResponse.status, responseText);
-      
-      let errorMessage = 'Odeme oturumu olusturulamadi';
-      let errorDetails = null;
-      
-      try {
-        const errorJson = JSON.parse(responseText);
-        errorMessage = errorJson.message || errorJson.error || errorMessage;
-        errorDetails = errorJson;
-      } catch {
-        errorDetails = { raw: responseText.substring(0, 200) };
+    // ONLY forward JWT to WordPress
+    const response = await fetch(
+      `${WC_URL}/wp-json/bayiportal/v1/payment/create`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          order_id,
+          return_url: return_url || `${WC_URL}/payment-callback`,
+        }),
       }
-      
-      return new Response(JSON.stringify({ 
-        error: errorMessage,
-        status: paymentResponse.status,
-        debug: DEBUG_MODE ? {
-          endpoint: paymentEndpoint,
-          auth_method: authMethod,
-          response_status: paymentResponse.status,
-          error_details: errorDetails
-        } : undefined
+    );
+
+    const text = await response.text();
+
+    debugLog('WP status:', response.status);
+    debugLog('WP response:', text.slice(0, 300));
+
+    if (!response.ok) {
+      return new Response(JSON.stringify({
+        error: 'Payment session failed',
+        status: response.status,
+        debug: DEBUG_MODE ? text : undefined
       }), {
-        status: paymentResponse.status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        status: response.status,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    let paymentData;
-    try {
-      paymentData = JSON.parse(responseText);
-    } catch {
-      debugError('Failed to parse response JSON:', responseText);
-      return new Response(JSON.stringify({ 
-        error: 'Invalid response from payment API',
-        debug: DEBUG_MODE ? { raw_response: responseText.substring(0, 200) } : undefined
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
-    }
-    
-    debugLog('Payment session created successfully:', {
-      has_payment_url: !!paymentData.payment_url,
-      has_session_id: !!paymentData.session_id
-    });
+    const data = JSON.parse(text);
 
     return new Response(JSON.stringify({
-      payment_url: paymentData.payment_url,
-      session_id: paymentData.session_id,
-      debug: DEBUG_MODE ? {
-        endpoint: paymentEndpoint,
-        auth_method: authMethod,
-        response_keys: Object.keys(paymentData)
-      } : undefined
+      payment_url: data.payment_url,
+      session_id: data.session_id,
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json' },
     });
 
-  } catch (error) {
-    debugError('Session error:', error);
-    return new Response(JSON.stringify({ 
-      error: 'Odeme oturumu olusturulurken hata olustu',
-      details: error instanceof Error ? error.message : 'Unknown error',
-      debug: DEBUG_MODE ? {
-        error_name: error instanceof Error ? error.name : 'Unknown',
-        error_stack: error instanceof Error ? error.stack?.substring(0, 300) : undefined
-      } : undefined
+  } catch (err) {
+    console.error('[Payment Error]', err);
+
+    return new Response(JSON.stringify({
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : 'unknown'
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 }
